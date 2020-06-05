@@ -10,14 +10,17 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS MaxHeight \* maximal height of all the chains in the system 
 
 VARIABLES chains, \* a function that assigns a chain record to each chainID 
-          outgoingDatagrams, \* a function that assigns a set of pending datagrams 
+          createdDatagrams, \* a function that assigns a set of datagrams created 
+                            \* by the relayer to each chainID
+          outgoingDatagrams, \* a function that assigns a set of datagrams 
                              \* outgoing from the relayer to each chainID 
           relayerChainHeights, \* a function that assigns a height to each chainID         
           turn  
           
-vars == <<chains, outgoingDatagrams, relayerChainHeights, turn>>
-specVars == <<chains, outgoingDatagrams, relayerChainHeights>>             
-envVars == <<chains>>           
+vars == <<chains, createdDatagrams, outgoingDatagrams, relayerChainHeights, turn>>
+specVars == <<chains, createdDatagrams, outgoingDatagrams, relayerChainHeights>>
+relayerVars == <<createdDatagrams, relayerChainHeights>>             
+envVars == <<chains, outgoingDatagrams>>           
 
 \* Instance of the module Environment, which encodes the chain logic    
 Env == INSTANCE Environment 
@@ -267,25 +270,38 @@ PendingDatagrams(srcChainID, dstChainID) ==
  ***************************************************************************)   
 \* Update the height of the relayer client for some chainID
 UpdateRelayerClients(chainID) ==
-        /\ relayerChainHeights[chainID] < GetLatestHeight(chainID)
-        /\ relayerChainHeights' = [relayerChainHeights EXCEPT 
-                                        ![chainID] = GetLatestHeight(chainID)
-                                   ]
-        /\ UNCHANGED <<chains, outgoingDatagrams>>  
+    /\ relayerChainHeights[chainID] < GetLatestHeight(chainID)
+    /\ relayerChainHeights' = [relayerChainHeights EXCEPT 
+                                  ![chainID] = GetLatestHeight(chainID)
+                              ]
+    /\ UNCHANGED createdDatagrams
+    /\ UNCHANGED envVars  
 
 \* for two chains, srcChainID and dstChainID, where srcChainID /= dstChainID, 
-\* create the pending datagrams and update the corresponding sets of pending datagrams
-Relay(srcChainID, dstChainID) ==
+\* create the datagrams 
+CreateDatagrams(srcChainID, dstChainID) ==
     LET datagramsAndRelayerUpdate == PendingDatagrams(srcChainID, dstChainID) IN
     /\ srcChainID /= dstChainID
-    /\ outgoingDatagrams' = 
-            [outgoingDatagrams EXCEPT 
-                ![dstChainID] = outgoingDatagrams[dstChainID] 
+    /\ createdDatagrams' = 
+            [createdDatagrams EXCEPT 
+                ![dstChainID] = createdDatagrams[dstChainID]
                                 \union 
                                 datagramsAndRelayerUpdate.datagrams
             ]
     /\ relayerChainHeights' = datagramsAndRelayerUpdate.relayerUpdate       
-    /\ UNCHANGED chains
+    /\ UNCHANGED envVars
+
+\* for a given chain, update the outgoing datagrams
+Relay(chainID) ==
+    /\ createdDatagrams[chainID] /= {}
+    /\ outgoingDatagrams' = 
+            [outgoingDatagrams EXCEPT 
+                ![chainID] = outgoingDatagrams[chainID] 
+                             \union 
+                             createdDatagrams[chainID]
+            ]
+    /\ createdDatagrams' = [createdDatagrams EXCEPT ![chainID] = {}]
+    /\ UNCHANGED <<chains, relayerChainHeights>>
 
 (***************************************************************************
  Component actions
@@ -297,15 +313,16 @@ Relay(srcChainID, dstChainID) ==
 \*        - does nothing
 Relayer ==
     \/ \E chainID \in ChainIDs : UpdateRelayerClients(chainID)
-    \/ \E srcChainID \in ChainIDs : \E dstChainID \in ChainIDs : Relay(srcChainID, dstChainID)
-    \/ UNCHANGED vars
+    \/ \E srcChainID \in ChainIDs : \E dstChainID \in ChainIDs : CreateDatagrams(srcChainID, dstChainID)
+    \/ \E chainID \in ChainIDs : Relay(chainID)
+\*    \/ UNCHANGED vars
     
 \* Environment
 \*    The environment takes the action Env!Next
-\*    and leaves the relayer variable unchanged
+\*    and leaves the relayer variables unchanged
 Environment ==
     /\ Env!Next
-    /\ UNCHANGED relayerChainHeights    
+    /\ UNCHANGED <<relayerChainHeights, createdDatagrams>>    
 
 (***************************************************************************
  Specification
@@ -318,6 +335,7 @@ Environment ==
 \*        - the environment is initialized, by Env!Init    
 Init == 
     /\ turn \in {"relayer", "environment"}
+    /\ createdDatagrams = [chainID \in ChainIDs |-> {}]
     /\ relayerChainHeights = [chainID \in ChainIDs |-> nullHeight]
     /\ Env!Init    
     
@@ -335,10 +353,10 @@ Next ==
        
 \* Fairness constraints
 Fairness ==
-    /\ \A chainID \in ChainIDs : 
-            WF_specVars(UpdateRelayerClients(chainID))
-    /\ \A srcChainID \in ChainIDs : \A dstChainID \in ChainIDs : 
-            WF_specVars(Relay(srcChainID, dstChainID))
+    /\ \A chainID \in ChainIDs : WF_specVars(UpdateRelayerClients(chainID))
+    /\ \A srcChainID \in ChainIDs : \A dstChainID \in ChainIDs :
+            WF_specVars(CreateDatagrams(srcChainID, dstChainID))
+    /\ \A chainID \in ChainIDs : WF_specVars(Relay(chainID))
     /\ Env!Fairness 
                         
 \* Spec formula
@@ -348,14 +366,14 @@ Spec == Init /\ [][Next]_vars /\ Fairness
  Helper operators used in properties
  ***************************************************************************)
 \* returns true if there is a "CreateClient" datagram
-\* in outgoing datagrams for chainID 
-IsCreateClientInPendingDatagrams(chainID, clID, h) == 
+\* in the created datagrams for chainID 
+IsCreateClientInOutgoingDatagrams(chainID, clID, h) == 
     [type |-> "CreateClient", clientID |-> clID, height |-> h] 
         \in outgoingDatagrams[chainID]
 
 \* returns true if there is a "ClientUpdate" datagram
 \* in outgoing datagrams for chainID           
-IsClientUpdateInPendingDatagrams(chainID, clID, h) ==
+IsClientUpdateInOutgoingDatagrams(chainID, clID, h) ==
     [type |-> "ClientUpdate", clientID |-> clID, height |-> h] 
         \in outgoingDatagrams[chainID]
 
@@ -458,6 +476,7 @@ IsChanOpenConfirmInPendingDatagrams(chainID, channelID) ==
 TypeOK ==
     /\ turn \in {"relayer", "environment"}
     /\ relayerChainHeights \in [ChainIDs -> Heights \union {nullHeight}]
+    /\ createdDatagrams \in [ChainIDs -> SUBSET Datagrams]
     /\ Env!TypeOK
     
 \* CreateClientInv   
@@ -466,7 +485,7 @@ TypeOK ==
 \* and the client that should be created does not exist (has null height)
 CreateClientInv ==
     \A chainID \in ChainIDs : \A clID \in ClientIDs :  
-        ((\E h \in Heights : IsCreateClientInPendingDatagrams(chainID, clID, h)) 
+        ((\E h \in Heights : IsClientUpdateInOutgoingDatagrams(chainID, clID, h)) 
             => (/\ clID = GetCounterpartyClientID(chainID)
                 /\ GetCounterpartyClientHeights(chainID) = {}))
 
@@ -475,7 +494,7 @@ CreateClientInv ==
 \* and the client that should be updated has height less than the one in the datagram
 ClientUpdateInv ==
     \A chainID \in ChainIDs : \A clID \in ClientIDs : \A h \in Heights :
-        IsClientUpdateInPendingDatagrams(chainID, clID, h) 
+        IsClientUpdateInOutgoingDatagrams(chainID, clID, h) 
             => (/\ clID = GetCounterpartyClientID(chainID)
                 /\ GetMaxCounterpartyClientHeight(chainID) < h)
 
@@ -609,11 +628,11 @@ Inv ==
 \*  - if 
 \*      * the counterparty client is not initialized
 \*  - then
-\*      * the relayer EVENTUALLY adds a "CreateClient" datagram in pending datagrams of chainID
+\*      * the relayer EVENTUALLY adds a "CreateClient" datagram in outgoing datagrams of chainID
 CreateClientIsGenerated == 
     [](\A chainID \in ChainIDs : 
         GetCounterpartyClientHeights(chainID) = {}
-        => <>(\E h \in Heights : IsCreateClientInPendingDatagrams(chainID, GetCounterpartyClientID(chainID), h)))
+        => <>(\E h \in Heights : IsCreateClientInOutgoingDatagrams(chainID, GetCounterpartyClientID(chainID), h)))
         
 \* it ALWAYS holds that, for every chainID:
 \*    - if   
@@ -623,7 +642,7 @@ CreateClientIsGenerated ==
 \*        * the counterparty client is EVENTUALLY created on chainID 
 ClientCreated ==
     [](\A chainID \in ChainIDs :  
-        (/\ \E h \in Heights : IsCreateClientInPendingDatagrams(chainID, GetCounterpartyClientID(chainID), h) 
+        (/\ \E h \in Heights : IsCreateClientInOutgoingDatagrams(chainID, GetCounterpartyClientID(chainID), h) 
          /\ ~IsCounterpartyClientOnChain(chainID))
            => (<>(IsCounterpartyClientOnChain(chainID))))  
 
@@ -639,7 +658,7 @@ ClientUpdateIsGenerated ==
          /\ GetMaxCounterpartyClientHeight(chainID) < GetLatestHeight(GetCounterpartyChainID(chainID)))
             => <>(\E h2 \in Heights : 
                     /\ h1 <= h2 
-                    /\ IsClientUpdateInPendingDatagrams(chainID, GetCounterpartyClientID(chainID), h2)))
+                    /\ IsClientUpdateInOutgoingDatagrams(chainID, GetCounterpartyClientID(chainID), h2)))
 
 \* it ALWAYS holds that, for every chainID:
 \*    - if   
@@ -650,7 +669,7 @@ ClientUpdateIsGenerated ==
 \*        * the counterparty client height is EVENTUALLY udpated to at least h  
 ClientUpdated ==
     [](\A chainID \in ChainIDs : \A h \in Heights : 
-        (/\ IsClientUpdateInPendingDatagrams(chainID, GetCounterpartyClientID(chainID), h) 
+        (/\ IsClientUpdateInOutgoingDatagrams(chainID, GetCounterpartyClientID(chainID), h) 
          /\ GetMaxCounterpartyClientHeight(chainID) < h)
            => (<>(CounterpartyClientHeightUpdated(chainID, h))))
     
@@ -740,5 +759,5 @@ Prop ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue May 26 12:13:36 CEST 2020 by ilinastoilkovska
+\* Last modified Fri Jun 05 16:44:34 CEST 2020 by ilinastoilkovska
 \* Created Fri Mar 06 09:23:12 CET 2020 by ilinastoilkovska
