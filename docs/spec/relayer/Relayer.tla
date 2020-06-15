@@ -485,7 +485,7 @@ TypeOK ==
 \* and the client that should be created does not exist (has null height)
 CreateClientInv ==
     \A chainID \in ChainIDs : \A clID \in ClientIDs :  
-        ((\E h \in Heights : IsClientUpdateInOutgoingDatagrams(chainID, clID, h)) 
+        ((\E h \in Heights : IsCreateClientInOutgoingDatagrams(chainID, clID, h)) 
             => (/\ clID = GetCounterpartyClientID(chainID)
                 /\ GetCounterpartyClientHeights(chainID) = {}))
 
@@ -759,5 +759,5 @@ Prop ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Jun 05 16:44:34 CEST 2020 by ilinastoilkovska
+\* Last modified Mon Jun 15 14:07:54 CEST 2020 by ilinastoilkovska
 \* Created Fri Mar 06 09:23:12 CET 2020 by ilinastoilkovska
